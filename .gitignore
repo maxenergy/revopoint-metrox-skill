@@ -1,0 +1,7 @@
+# Generated scan outputs & temporary files
+output/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
