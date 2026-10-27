@@ -218,8 +218,10 @@ def load_points_and_mesh(filepath):
     return pts, fc_mesh
 
 
-def clean_point_cloud(pts, remove_base=False, isolate=True, sor_k=16, sor_std=2.0):
-    """Clean point cloud: Statistical Outlier Removal, optional RANSAC base plane slicing, and main cluster isolation."""
+def clean_point_cloud(pts, remove_base=False, isolate=True, sor_k=16, sor_std=2.0,
+                      remove_markers=True, marker_max_mm=12.0, marker_flatness_mm=0.6):
+    """Clean point cloud: Statistical Outlier Removal, optional RANSAC base plane slicing, marker-disc removal
+    and main cluster isolation."""
     raw_count = len(pts)
     if raw_count < 30:
         return pts, {"raw_points": raw_count, "cleaned_points": raw_count}
@@ -281,6 +283,7 @@ def clean_point_cloud(pts, remove_base=False, isolate=True, sor_k=16, sor_std=2.
 
     # 3. Connected-Component Isolation via KDTree Graph (removes floating marker blocks & background clutter)
     isolated_removed_count = 0
+    marker_clusters_removed = 0
     if isolate and len(work_pts) > 100:
         tree2 = cKDTree(work_pts)
         d2, _ = tree2.query(work_pts, k=min(8, len(work_pts)))
@@ -313,6 +316,21 @@ def clean_point_cloud(pts, remove_base=False, isolate=True, sor_k=16, sor_std=2.
                             comp.append(nb)
                 clusters.append(comp)
 
+        # Drop marker-sticker discs: small (<= marker_max_mm across) and flat (thin along the smallest PCA axis)
+        if remove_markers and len(clusters) > 1:
+            kept = []
+            for c in clusters:
+                cp = sub_pts[c]
+                if len(cp) >= 6:
+                    sv = np.linalg.svd(cp - cp.mean(axis=0), compute_uv=False) / math.sqrt(len(cp))
+                    extent = float(np.ptp(cp, axis=0).max())
+                    if extent <= marker_max_mm and sv[2] < marker_flatness_mm:
+                        marker_clusters_removed += 1
+                        continue
+                kept.append(c)
+            if kept:
+                clusters = kept
+
         clusters.sort(key=len, reverse=True)
         # Keep largest cluster (and any cluster that has at least 20% of the largest cluster's points)
         main_size = len(clusters[0])
@@ -336,6 +354,7 @@ def clean_point_cloud(pts, remove_base=False, isolate=True, sor_k=16, sor_std=2.
         "cleaned_points": int(len(work_pts)),
         "base_plane_points_removed": int(base_removed_count),
         "isolated_noise_points_removed": int(isolated_removed_count),
+        "marker_disc_clusters_removed": int(marker_clusters_removed),
     }
     return work_pts, stats
 
@@ -1037,6 +1056,8 @@ def main():
     parser.add_argument("--name", help="自定义输出文件名前缀")
     parser.add_argument("--remove-base", action="store_true", help="自动通过 RANSAC 拟合切除底部桌面/转盘平面")
     parser.add_argument("--no-isolate", action="store_true", help="禁用连通域孤立点/外围标志块自动剔除")
+    parser.add_argument("--keep-markers", action="store_true", help="保留孤立的标志点贴纸圆片簇 (默认剔除)")
+    parser.add_argument("--marker-max-mm", type=float, default=12.0, help="标志点圆片簇的最大外径 (mm)，默认 12")
     args = parser.parse_args()
 
     input_file, auto_name = resolve_input_file(args)
@@ -1049,7 +1070,8 @@ def main():
 
     # 2. Clean point cloud (SOR + optional base plane removal + connected component isolation)
     cleaned_pts, clean_stats = clean_point_cloud(
-        pts, remove_base=args.remove_base, isolate=(not args.no_isolate)
+        pts, remove_base=args.remove_base, isolate=(not args.no_isolate),
+        remove_markers=(not args.keep_markers), marker_max_mm=args.marker_max_mm
     )
 
     # 3. PCA Coordinate Alignment (flat base on XY plane, Z >= 0, longest axis on X)

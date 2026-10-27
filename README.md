@@ -23,7 +23,10 @@ revopoint-metrox-skill/
 │       ├── SKILL.md                           # RevoMetro.exe 自动化控制与逆向 CAD 出图 Skill
 │       └── scripts/
 │           ├── revo_controller.py             # RevoMetro.exe 进程/配置/快捷键控制与 rvScan5.log 实时诊断
-│           └── scan_to_cad.py                 # 点云清洗、PCA 对齐、STEP/IGES 实体逆向与 DXF/PDF 三视图生成
+│           ├── scan_to_cad.py                 # 点云清洗、PCA 对齐、STEP/IGES 实体逆向与 DXF/PDF 三视图生成
+│           ├── revo_pipeline.py               # 扫描 → 一键融合网格 → 出图 → 切片 全自动流水线
+│           ├── slice_print.py                 # 拓竹 H2D / A2L 预设展开与 OrcaSlicer CLI 切片
+│           └── frida/qt_bridge.js             # 注入 RevoMetro 的 Qt 控件枚举与点击脚本
 └── .agents/
     └── skills/                                # 工作区级自动加载 Skills 镜像
 ```
@@ -52,21 +55,36 @@ python skills/revo-metro-cad-copilot/scripts/revo_controller.py status
 python skills/revo-metro-cad-copilot/scripts/revo_controller.py launch --project "C:\path\to\project.revo"
 
 # 实时分析 rvScan5.log 日志（诊断 0x10002 标记点不足、0x10006 特征丢失，并获取 AI 推荐融合点距）
-python skills/revo-metro-cad-copilot/scripts/revo_controller.py analyze-log --lines 500
+python skills/revo-metro-cad-copilot/scripts/revo_controller.py diagnose --watch 10
 
 # 发送 GUI 快捷键控制扫描（开始/暂停扫描、保存、反选删除外围标志块等）
-python skills/revo-metro-cad-copilot/scripts/revo_controller.py send-key --action toggle_scan
-python skills/revo-metro-cad-copilot/scripts/revo_controller.py send-key --action delete_inverted
+python skills/revo-metro-cad-copilot/scripts/revo_controller.py action start_pause
+python skills/revo-metro-cad-copilot/scripts/revo_controller.py action delete_invert
 ```
 
 ### 3. 将 3D 扫描工程一键转为 3D CAD 实体与 2D/3D 工程图纸 (`scan_to_cad.py`)
 > 依赖环境：本机安装 [FreeCAD 1.0/1.1+](https://www.freecad.org/)（脚本会自动调用 FreeCAD 内置的 Python、OpenCASCADE `Part`、`ReverseEngineering`、`Mesh`、`SciPy` 与 `Matplotlib`）。
 
 ```powershell
-# 自动读取最新的 Revo Metro 扫描工程，执行 RANSAC 去底面、孤立噪点剔除、PCA 正交对齐，
+# 读取指定的 Revo Metro 扫描工程（--project 工程名，或 --input 任意 .ply/.stl/.obj/.revo），
+# 执行 RANSAC 去底面、标志点圆片与孤立噪点剔除、PCA 正交对齐，
 # 并输出：
 #   1. 清理后的高精度 3D 网格 (.stl, .ply, .obj)
 #   2. 逆向参数化 3D CAD 实体 (.step, .iges, _parametric_cad.py)
 #   3. 2D/3D 工程三视图与多高度截面蓝图 (.dxf, _blueprint.pdf, _blueprint.svg, _blueprint.png, _dimensions.json)
-python skills/revo-metro-cad-copilot/scripts/scan_to_cad.py --latest-project --remove-base --out-dir "./output"
+python skills/revo-metro-cad-copilot/scripts/scan_to_cad.py --project "Project10262026204924" --remove-base --out-dir "./output"
+```
+
+### 4. 扫描完成 → 自动出图 → 拓竹 H2D / A2L 切片 (`revo_pipeline.py`)
+> 依赖环境：`rea` CLI（内置 Frida，用于注入 RevoMetro 的 Qt 界面）、[OrcaSlicer](https://github.com/SoftFever/OrcaSlicer)。A2L 机器预设读取自 Bambu Studio 缓存 `%APPDATA%\BambuStudio\system\BBL`。
+
+```powershell
+# 让运行中的 RevoMetro 打开工程 → One-click Edit 一键融合+网格 → 出图纸 → 同时为 H2D 与 A2L 切片 (.3mf + .gcode)
+python skills/revo-metro-cad-copilot/scripts/revo_pipeline.py auto --project "Project10262026204924" --printer h2d a2l
+
+# 守护模式：检测到扫描保存后自动执行上面的全流程
+python skills/revo-metro-cad-copilot/scripts/revo_pipeline.py watch --printer h2d --once
+
+# 单独切片任意模型
+python skills/revo-metro-cad-copilot/scripts/slice_print.py model.stl --printer a2l --out-dir "./output/print"
 ```
