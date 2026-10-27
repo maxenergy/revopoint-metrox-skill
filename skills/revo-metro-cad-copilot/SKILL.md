@@ -189,9 +189,26 @@ python $P click --text Home --cls QToolButton
 python $P open --project Project_Example
 python $P process --project Project10262026204924 --force   # 只做一键融合+网格
 
+python $P widgets --win PartConnectDialog                     # 只看某个顶层窗口（对话框）的控件，输出含屏幕坐标 rect
+python $P invoke --text "Cross Lines" --cls rv::RvComboBox --method setCurrentIndex --arg-type int --value 0
+python $P invoke --name DepthExposureSlider --method setValue --arg-type int --value 7
+python $P actions                                             # 列出菜单项 (QAction)，owner 为菜单标题
+python $P trigger --text Connection --owner "Dual-axis Turntable"
+python $P mclick --name markerScanBtn --cls SwitchButton      # 真实鼠标点击 (自定义控件 / 列表条目)
+
 python slice_print.py model.stl --printer a2l --out-dir out\print
+python slice_print.py a.stl b.stl c.stl --printer a2l --name parts --out-dir out\print   # 多个零件排在同一块板上
 python slice_print.py x --printer h2d --list-presets         # 列出可用工艺/耗材预设
 ```
+
+### 扫描控制（MetroX Pro + 双轴转盘，实测）
+- **新建工程**：`click --text "New Project"` → `invoke --name setSaveLineEidt --method setText --arg-type QString --value <名称>` → `click --text New`。
+- **连接转盘**：`trigger --text Connection --owner "Dual-axis Turntable"` 打开 `PartConnectDialog`；设备条目上的 `Connect`（`PartFindConnectBtn`）只在鼠标悬停时出现，先 `mclick --name PartFindItemNameTip` 再 `click --text Connect`，最后点 `partConnectSureBtn`。状态栏出现 "Dual-axis Turntable Connected" 即成功。"My Devices" 里 Disconnected 且蓝牙扫不到时，需要转盘断电重启。
+- **Auto Turntable 模式不可用（5.8.8.460 + 固件 v2.2.13）**：切到该模式时 RGB 流以垃圾参数启动（sdk.log `start stream( rgb) width:10000,height:1700601867`，rvScan5.log `startStream error: 3`），扫描在第一步转动后卡死。改用 **Full Field + Marker Tracking + Turntable Sync**：开始扫描时转盘连续旋转（`+CT,TURNCONTINUE=-1`），一圈约 53 s，转两圈后点 `scanpEndBtn`。
+- **开始 / 结束**：开始按钮是 `ComboBoxButtonCtrl`；结束是 `scanpEndBtn`；取消是 `scanCancelBtn`；进入扫描页用 `mclick --name markerScanBtn --cls SwitchButton`。
+- **SwitchButton 状态**：`isChecked` 不反映开关状态，`click` 也可能不切换；以日志确认（如 Base Removal：`Set scan param, name=clip_plane, value=1`）。
+- **扫描前检查**：右侧距离直方图要落在绿色区（约 250–330 mm），橙色 "Too Near" 时点云会碎；深度曝光调到能看清物体（实测 7）。界面显示 "Connected" 但没有 fps 时数据流没起来，切换一次扫描模式即可重启流。
+- **状态码**：`0x10001` 追踪正常，`0x10002` 标志点不足，`0x10003` / `0x10007` 点云不足提示；`Scanner offline` 表示 USB 掉线（Windows 显示 "Port Reset Failed" 时需重插或重启）。
 
 ### 逆向得到的 RevoMetro 5.8.8.460 控制面（实测 + Ghidra 反编译）
 - **单实例 IPC**：第二实例把首个位置参数以 UTF-8 写入 `QLocalServer "revoscan5_localserver"`（Windows 命名管道 `\.\pipe\revoscan5_localserver`）。`StartPageWidget::openDocument` 只在**首页可见且无模态窗口**时打开，所以在工程内要先点 `Home`。

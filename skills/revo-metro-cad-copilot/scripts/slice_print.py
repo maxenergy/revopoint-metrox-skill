@@ -106,14 +106,17 @@ def write_resolved_presets(printer, out_dir, machine=None, process=None, filamen
 
 
 def slice_model(model_path, printer, out_dir, machine=None, process=None, filament=None,
-                orient=True, timeout=900):
-    """Slice one model (.stl/.obj/.3mf/.step) with OrcaSlicer CLI; returns a result dict."""
+                orient=True, timeout=900, name=None):
+    """Slice one model, or a list of models arranged on one plate (.stl/.obj/.3mf/.step), with OrcaSlicer CLI.
+
+    Returns a result dict. `name` sets the output base name (default: the first model's file name)."""
     if not os.path.isfile(ORCA_EXE):
         raise FileNotFoundError(f"未找到 OrcaSlicer: {ORCA_EXE}")
+    models = [model_path] if isinstance(model_path, str) else list(model_path)
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     presets, names = write_resolved_presets(printer, out_dir, machine, process, filament)
-    base = os.path.splitext(os.path.basename(model_path))[0]
+    base = name or os.path.splitext(os.path.basename(models[0]))[0]
     out_3mf = os.path.join(out_dir, f"{base}_{printer}.3mf")
     datadir = os.path.join(out_dir, "orca_datadir")
     os.makedirs(datadir, exist_ok=True)
@@ -128,8 +131,7 @@ def slice_model(model_path, printer, out_dir, machine=None, process=None, filame
         "--load-filaments", presets["filament"],
         "--outputdir", out_dir,
         "--export-3mf", os.path.basename(out_3mf),  # resolved relative to --outputdir
-        os.path.abspath(model_path),
-    ]
+    ] + [os.path.abspath(m) for m in models]
     for stale in glob.glob(os.path.join(out_dir, "plate_*.gcode")):
         os.remove(stale)
     # cwd=out_dir: with --debug the CLI writes its 00000.log into the working directory
@@ -161,7 +163,8 @@ def slice_model(model_path, printer, out_dir, machine=None, process=None, filame
 
 def main():
     parser = argparse.ArgumentParser(description="拓竹 H2D / A2L 自动切片 (OrcaSlicer CLI)")
-    parser.add_argument("model", help="要切片的模型 (.stl / .obj / .3mf / .step)")
+    parser.add_argument("model", nargs="+", help="要切片的模型 (.stl / .obj / .3mf / .step)，多个模型会排在同一块打印板上")
+    parser.add_argument("--name", help="输出文件名前缀 (默认取第一个模型的文件名)")
     parser.add_argument("--printer", choices=sorted(PRINTERS), default="h2d", help="目标打印机")
     parser.add_argument("--out-dir", default=r"d:\source\revopoint\output\print", help="输出目录")
     parser.add_argument("--machine", help="覆盖机器预设名称")
@@ -180,7 +183,7 @@ def main():
         return
 
     res = slice_model(args.model, args.printer, args.out_dir, args.machine, args.process,
-                      args.filament, orient=not args.no_orient)
+                      args.filament, orient=not args.no_orient, name=args.name)
     print(json.dumps(res, ensure_ascii=False, indent=2))
     sys.exit(0 if res["returncode"] == 0 and res["output_3mf"] else 1)
 

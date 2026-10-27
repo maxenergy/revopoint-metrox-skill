@@ -142,6 +142,58 @@ def click(**flt):
     return res
 
 
+def invoke(method, arg_type=None, value=None, **flt):
+    """Queue a Qt slot call (e.g. setText/setChecked/setCurrentIndex/setValue) on one matching widget."""
+    cmd = dict(op="invoke", method=method, **flt)
+    if arg_type:
+        cmd["arg"] = {"type": arg_type, "value": value}
+    res = qt(cmd)
+    if not res.get("ok"):
+        raise RuntimeError(f"调用 {method} 失败 {flt}: {res.get('error')} {res.get('candidates', '')}")
+    return res
+
+
+def mouse_click(rect, double=False):
+    """Real mouse click at the centre of a widget's logical global rect [x, y, w, h].
+
+    Brings RevoMetro to the foreground first; Qt logical pixels are scaled by the window DPI."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except OSError:
+        user32.SetProcessDPIAware()
+    pid = revo_pid()
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def enum(hwnd, _):
+        p = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+        if p.value == pid and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(enum, 0)
+    if not found:
+        raise RuntimeError("找不到 RevoMetro 窗口。")
+    hwnd = found[0]  # topmost visible window of the process (dialogs come first in z-order)
+    scale = user32.GetDpiForWindow(hwnd) / 96.0
+    user32.keybd_event(0x12, 0, 0, 0)  # ALT tap lets SetForegroundWindow succeed from a background process
+    user32.keybd_event(0x12, 0, 2, 0)
+    user32.SetForegroundWindow(hwnd)
+    time.sleep(0.4)
+    x = int((rect[0] + rect[2] / 2) * scale)
+    y = int((rect[1] + rect[3] / 2) * scale)
+    user32.SetCursorPos(x, y)
+    for _ in range(2 if double else 1):
+        user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
+        user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
+        time.sleep(0.08)
+    return {"x": x, "y": y, "scale": scale}
+
+
 def visible(name=None, text=None, cls=None):
     return [w for w in widgets() if (name is None or w["name"] == name)
             and (text is None or w["text"].strip() == text) and (cls is None or w["cls"] == cls)]
@@ -258,14 +310,50 @@ def run_scan_to_cad(mesh_path, name, out_dir, remove_base):
 
 
 def cmd_widgets(args):
-    ws = widgets(name=args.name, text=args.text, cls=args.cls, visibleOnly=not args.all)
+    ws = widgets(name=args.name, text=args.text, cls=args.cls, win=args.win, visibleOnly=not args.all)
     for w in ws:
-        print(f"{w['name'] or '-':32} {w['cls']:28} en={int(w['enabled'])} {w['text'][:60]}")
+        print(f"{w['win']:22} {w['name'] or '-':32} {w['cls']:28} en={int(w['enabled'])} {w['text'][:60]}")
     print(f"# {len(ws)} widgets")
 
 
 def cmd_click(args):
-    print(json.dumps(click(name=args.name, text=args.text, cls=args.cls), ensure_ascii=False, indent=2))
+    print(json.dumps(click(name=args.name, text=args.text, cls=args.cls, win=args.win), ensure_ascii=False, indent=2))
+
+
+def cmd_invoke(args):
+    value = args.value
+    if args.arg_type == "int":
+        value = int(value)
+    elif args.arg_type == "double":
+        value = float(value)
+    elif args.arg_type == "bool":
+        value = value.lower() in ("1", "true", "yes", "on")
+    print(json.dumps(invoke(args.method, args.arg_type, value, name=args.name, text=args.text, cls=args.cls,
+                            win=args.win), ensure_ascii=False, indent=2))
+
+
+def cmd_actions(args):
+    for a in qt(dict(op="actions", text=args.text))["actions"]:
+        print(f"{a['owner']:28} en={int(a['enabled'])} chk={int(a['checked'])} {a['text']}"
+              + (f"  -> {a['submenu']}" if a['submenu'] else ""))
+
+
+def trigger(text, owner=None):
+    res = qt(dict(op="trigger", text=text, owner=owner))
+    if not res.get("ok"):
+        raise RuntimeError(f"触发菜单项失败 {text}: {res.get('error')} {res.get('candidates', '')}")
+    return res
+
+
+def cmd_trigger(args):
+    print(json.dumps(trigger(args.text, args.owner), ensure_ascii=False, indent=2))
+
+
+def cmd_mclick(args):
+    ws = [w for w in widgets(name=args.name, text=args.text, cls=args.cls, win=args.win)]
+    if len(ws) != 1:
+        raise RuntimeError(f"需要唯一匹配的控件，实际 {len(ws)} 个")
+    print(json.dumps(mouse_click(ws[0]["rect"], args.double), ensure_ascii=False))
 
 
 def cmd_open(args):
@@ -348,14 +436,34 @@ def main():
     parser = argparse.ArgumentParser(description="RevoMetro 扫描 → 图纸 → 拓竹切片 自动化")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("widgets", help="列出 RevoMetro 当前 Qt 控件 (objectName/类/文字/可用状态)")
-    p.add_argument("--name"); p.add_argument("--text"); p.add_argument("--cls")
+    p = sub.add_parser("widgets", help="列出 RevoMetro 当前 Qt 控件 (所属窗口类/objectName/类/文字/可用状态)")
+    p.add_argument("--name"); p.add_argument("--text"); p.add_argument("--cls"); p.add_argument("--win", help="所属顶层窗口类名")
     p.add_argument("--all", action="store_true", help="包含不可见控件")
     p.set_defaults(func=cmd_widgets)
 
     p = sub.add_parser("click", help="在 GUI 线程上点击一个按钮 (按 objectName 或文字定位，须唯一)")
-    p.add_argument("--name"); p.add_argument("--text"); p.add_argument("--cls")
+    p.add_argument("--name"); p.add_argument("--text"); p.add_argument("--cls"); p.add_argument("--win", help="所属顶层窗口类名")
     p.set_defaults(func=cmd_click)
+
+    p = sub.add_parser("invoke", help="在 GUI 线程上调用控件槽函数，如 setText / setChecked / setCurrentIndex / setValue")
+    p.add_argument("--name"); p.add_argument("--text"); p.add_argument("--cls"); p.add_argument("--win")
+    p.add_argument("--method", required=True)
+    p.add_argument("--arg-type", choices=["QString", "int", "bool", "double"])
+    p.add_argument("--value")
+    p.set_defaults(func=cmd_invoke)
+
+    p = sub.add_parser("mclick", help="真实鼠标点击控件中心 (用于非按钮的自定义控件，如列表条目)")
+    p.add_argument("--name"); p.add_argument("--text"); p.add_argument("--cls"); p.add_argument("--win")
+    p.add_argument("--double", action="store_true")
+    p.set_defaults(func=cmd_mclick)
+
+    p = sub.add_parser("actions", help="列出菜单/工具栏中的 QAction (菜单项)")
+    p.add_argument("--text")
+    p.set_defaults(func=cmd_actions)
+
+    p = sub.add_parser("trigger", help="在 GUI 线程上触发一个菜单项 (QAction::trigger)")
+    p.add_argument("--text", required=True); p.add_argument("--owner", help="所属菜单/工具栏 objectName 或类名")
+    p.set_defaults(func=cmd_trigger)
 
     p = sub.add_parser("open", help="在运行中的 RevoMetro 打开工程")
     p.add_argument("--project", help="工程名或 .revo 路径 (默认最新工程)")
