@@ -13,12 +13,17 @@ Preset sources (searched in order, first match by preset name wins):
 Bambu Studio process/filament values can fail Orca's range validation (e.g. tree_support_wall_count=-1),
 so A2L uses the Bambu Studio machine preset with Orca's A1 process/filament presets, whose
 compatible_printers lists are extended with the A2L machine name.
+
+The A2L machine preset keeps its own start/end/filament-change G-code in `include` templates. Those are not
+merged: they use Bambu-only variables (initial_filament_id, next_nozzle_id, ...) that Orca's G-code parser
+rejects with "Not a variable name", so A2L slices run the generic G-code inherited from fdm_bbl_3dp_001_common.
 """
 
 import argparse
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -41,6 +46,13 @@ PRINTERS = {
         "filament": "Bambu PLA Basic @BBL A1",
     },
 }
+
+# OrcaSlicer curr_bed_type values; each maps to a *_plate_temp pair in the filament preset
+BED_TYPES = ["Cool Plate", "Engineering Plate", "High Temp Plate", "Textured PEI Plate", "Supertack Plate"]
+
+# End-of-print filament unload in the generic machine_end_gcode. On an A2L with an external spool it pauses the
+# finished print at about 230 C until someone pulls the filament out (HMS 07FF-2000-0002-0004).
+FILAMENT_UNLOAD_GCODE = re.compile(r"; pull back filament to AMS\nM620 S255\n.*?M621 S255\n", re.S)
 
 # Keys that only describe preset bookkeeping; dropped after flattening
 META_KEYS = {"inherits", "instantiation", "setting_id", "filament_id", "base_id"}
@@ -105,17 +117,37 @@ def write_resolved_presets(printer, out_dir, machine=None, process=None, filamen
     return paths, names
 
 
+def drop_filament_unload(machine_preset_path):
+    """Remove the end-of-print unload from a resolved machine preset; returns False if it has none."""
+    with open(machine_preset_path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    cfg["machine_end_gcode"], removed = FILAMENT_UNLOAD_GCODE.subn("", cfg.get("machine_end_gcode", ""))
+    with open(machine_preset_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=1)
+    return bool(removed)
+
+
 def slice_model(model_path, printer, out_dir, machine=None, process=None, filament=None,
-                orient=True, timeout=900, name=None):
+                orient=True, timeout=900, name=None, bed_type=None, external_spool=False):
     """Slice one model, or a list of models arranged on one plate (.stl/.obj/.3mf/.step), with OrcaSlicer CLI.
 
-    Returns a result dict. `name` sets the output base name (default: the first model's file name)."""
+    Returns a result dict. `name` sets the output base name (default: the first model's file name);
+    `bed_type` (e.g. "Textured PEI Plate") selects the build plate and with it the filament's bed temperatures;
+    `external_spool` drops the end-of-print filament unload, for printers without an AMS."""
     if not os.path.isfile(ORCA_EXE):
         raise FileNotFoundError(f"未找到 OrcaSlicer: {ORCA_EXE}")
     models = [model_path] if isinstance(model_path, str) else list(model_path)
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     presets, names = write_resolved_presets(printer, out_dir, machine, process, filament)
+    if bed_type:
+        with open(presets["process"], "r", encoding="utf-8") as f:
+            proc_cfg = json.load(f)
+        proc_cfg["curr_bed_type"] = bed_type
+        with open(presets["process"], "w", encoding="utf-8") as f:
+            json.dump(proc_cfg, f, ensure_ascii=False, indent=1)
+    if external_spool and not drop_filament_unload(presets["machine"]):
+        print(f"警告: {names['machine']} 的 machine_end_gcode 里没有可去除的退料段", file=sys.stderr)
     base = name or os.path.splitext(os.path.basename(models[0]))[0]
     out_3mf = os.path.join(out_dir, f"{base}_{printer}.3mf")
     datadir = os.path.join(out_dir, "orca_datadir")
@@ -171,6 +203,8 @@ def main():
     parser.add_argument("--process", help="覆盖工艺预设名称，如 '0.16mm Standard @BBL H2D'")
     parser.add_argument("--filament", help="覆盖耗材预设名称，如 'Bambu PETG HF @BBL H2D'")
     parser.add_argument("--no-orient", action="store_true", help="禁用自动摆放朝向")
+    parser.add_argument("--bed-type", choices=BED_TYPES, help="打印板类型 (决定热床温度)，默认沿用预设")
+    parser.add_argument("--external-spool", action="store_true", help="外挂料盘 (无 AMS)：去掉打印结束时的退料，否则 A2L 会停在拔料提示上")
     parser.add_argument("--list-presets", action="store_true", help="列出该打印机可用的工艺/耗材预设后退出")
     args = parser.parse_args()
 
@@ -183,7 +217,8 @@ def main():
         return
 
     res = slice_model(args.model, args.printer, args.out_dir, args.machine, args.process,
-                      args.filament, orient=not args.no_orient, name=args.name)
+                      args.filament, orient=not args.no_orient, name=args.name, bed_type=args.bed_type,
+                      external_spool=args.external_spool)
     print(json.dumps(res, ensure_ascii=False, indent=2))
     sys.exit(0 if res["returncode"] == 0 and res["output_3mf"] else 1)
 

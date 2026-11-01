@@ -329,7 +329,7 @@ def cmd_invoke(args):
     elif args.arg_type == "bool":
         value = value.lower() in ("1", "true", "yes", "on")
     print(json.dumps(invoke(args.method, args.arg_type, value, name=args.name, text=args.text, cls=args.cls,
-                            win=args.win), ensure_ascii=False, indent=2))
+                            win=args.win, nth=args.nth), ensure_ascii=False, indent=2))
 
 
 def cmd_actions(args):
@@ -398,7 +398,8 @@ def cmd_auto(args):
         report["print"] = []
         for printer in args.printer:
             res = slice_print.slice_model(src, printer, os.path.join(out_dir, "print"), process=args.process,
-                                          filament=args.filament)
+                                          filament=args.filament, bed_type=args.bed_type,
+                                          external_spool=args.external_spool)
             res.pop("command", None)
             report["print"].append(res)
     report["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -447,6 +448,7 @@ def main():
 
     p = sub.add_parser("invoke", help="在 GUI 线程上调用控件槽函数，如 setText / setChecked / setCurrentIndex / setValue")
     p.add_argument("--name"); p.add_argument("--text"); p.add_argument("--cls"); p.add_argument("--win")
+    p.add_argument("--nth", type=int, help="多个控件同时匹配时按屏幕位置 (上到下) 取第 n 个，从 0 开始")
     p.add_argument("--method", required=True)
     p.add_argument("--arg-type", choices=["QString", "int", "bool", "double"])
     p.add_argument("--value")
@@ -489,6 +491,8 @@ def main():
                        help="mesh=清洗后的扫描网格 STL (默认)；cad=逆向 STEP 实体")
         p.add_argument("--process", help="覆盖工艺预设名")
         p.add_argument("--filament", help="覆盖耗材预设名")
+        p.add_argument("--bed-type", choices=slice_print.BED_TYPES, help="打印板类型 (决定热床温度)")
+        p.add_argument("--external-spool", action="store_true", help="外挂料盘 (无 AMS)：去掉打印结束时的退料")
         if name == "watch":
             p.add_argument("--once", action="store_true", help="处理一次后退出")
         p.set_defaults(func=func)
