@@ -42,6 +42,9 @@ PRINTERS = {
     },
 }
 
+# OrcaSlicer curr_bed_type values; each maps to a *_plate_temp pair in the filament preset
+BED_TYPES = ["Cool Plate", "Engineering Plate", "High Temp Plate", "Textured PEI Plate", "Supertack Plate"]
+
 # Keys that only describe preset bookkeeping; dropped after flattening
 META_KEYS = {"inherits", "instantiation", "setting_id", "filament_id", "base_id"}
 
@@ -106,16 +109,23 @@ def write_resolved_presets(printer, out_dir, machine=None, process=None, filamen
 
 
 def slice_model(model_path, printer, out_dir, machine=None, process=None, filament=None,
-                orient=True, timeout=900, name=None):
+                orient=True, timeout=900, name=None, bed_type=None):
     """Slice one model, or a list of models arranged on one plate (.stl/.obj/.3mf/.step), with OrcaSlicer CLI.
 
-    Returns a result dict. `name` sets the output base name (default: the first model's file name)."""
+    Returns a result dict. `name` sets the output base name (default: the first model's file name);
+    `bed_type` (e.g. "Textured PEI Plate") selects the build plate and with it the filament's bed temperatures."""
     if not os.path.isfile(ORCA_EXE):
         raise FileNotFoundError(f"未找到 OrcaSlicer: {ORCA_EXE}")
     models = [model_path] if isinstance(model_path, str) else list(model_path)
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     presets, names = write_resolved_presets(printer, out_dir, machine, process, filament)
+    if bed_type:
+        with open(presets["process"], "r", encoding="utf-8") as f:
+            proc_cfg = json.load(f)
+        proc_cfg["curr_bed_type"] = bed_type
+        with open(presets["process"], "w", encoding="utf-8") as f:
+            json.dump(proc_cfg, f, ensure_ascii=False, indent=1)
     base = name or os.path.splitext(os.path.basename(models[0]))[0]
     out_3mf = os.path.join(out_dir, f"{base}_{printer}.3mf")
     datadir = os.path.join(out_dir, "orca_datadir")
@@ -171,6 +181,7 @@ def main():
     parser.add_argument("--process", help="覆盖工艺预设名称，如 '0.16mm Standard @BBL H2D'")
     parser.add_argument("--filament", help="覆盖耗材预设名称，如 'Bambu PETG HF @BBL H2D'")
     parser.add_argument("--no-orient", action="store_true", help="禁用自动摆放朝向")
+    parser.add_argument("--bed-type", choices=BED_TYPES, help="打印板类型 (决定热床温度)，默认沿用预设")
     parser.add_argument("--list-presets", action="store_true", help="列出该打印机可用的工艺/耗材预设后退出")
     args = parser.parse_args()
 
@@ -183,7 +194,7 @@ def main():
         return
 
     res = slice_model(args.model, args.printer, args.out_dir, args.machine, args.process,
-                      args.filament, orient=not args.no_orient, name=args.name)
+                      args.filament, orient=not args.no_orient, name=args.name, bed_type=args.bed_type)
     print(json.dumps(res, ensure_ascii=False, indent=2))
     sys.exit(0 if res["returncode"] == 0 and res["output_3mf"] else 1)
 

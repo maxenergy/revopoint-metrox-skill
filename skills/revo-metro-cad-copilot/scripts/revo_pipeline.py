@@ -329,7 +329,7 @@ def cmd_invoke(args):
     elif args.arg_type == "bool":
         value = value.lower() in ("1", "true", "yes", "on")
     print(json.dumps(invoke(args.method, args.arg_type, value, name=args.name, text=args.text, cls=args.cls,
-                            win=args.win), ensure_ascii=False, indent=2))
+                            win=args.win, nth=args.nth), ensure_ascii=False, indent=2))
 
 
 def cmd_actions(args):
@@ -447,6 +447,7 @@ def main():
 
     p = sub.add_parser("invoke", help="在 GUI 线程上调用控件槽函数，如 setText / setChecked / setCurrentIndex / setValue")
     p.add_argument("--name"); p.add_argument("--text"); p.add_argument("--cls"); p.add_argument("--win")
+    p.add_argument("--nth", type=int, help="多个控件同时匹配时按屏幕位置 (上到下) 取第 n 个，从 0 开始")
     p.add_argument("--method", required=True)
     p.add_argument("--arg-type", choices=["QString", "int", "bool", "double"])
     p.add_argument("--value")

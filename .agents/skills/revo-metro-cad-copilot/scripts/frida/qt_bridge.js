@@ -85,7 +85,7 @@ function matches(w) {
   if (CMD.visibleOnly !== false && !w.visible) return false;
   if (CMD.name && w.name !== CMD.name) return false;
   if (CMD.text && w.text.trim() !== CMD.text) return false;
-  if (CMD.cls && w.cls !== CMD.cls) return false;
+  if (CMD.cls && CMD.cls !== '*' && w.cls !== CMD.cls) return false;  // '*' = any class (lists unnamed widgets too)
   if (CMD.win && w.win !== CMD.win) return false;
   return true;
 }
@@ -111,7 +111,8 @@ function invoke(obj, method, arg) {
   return !!invokeMethod.apply(null, argv);
 }
 if (CMD.op === 'list') {
-  send({ op: 'list', total: all.length, widgets: sel.filter(x => x.name || x.text).map(pub) });
+  // unnamed, text-less widgets (sliders etc.) are listed only when a class filter is given
+  send({ op: 'list', total: all.length, widgets: sel.filter(x => x.name || x.text || CMD.cls).map(pub) });
 } else if (CMD.op === 'click') {
   const btn = sel.filter(x => x.button);
   if (btn.length !== 1) {
@@ -145,6 +146,11 @@ if (CMD.op === 'list') {
     else send({ op: 'trigger', ok: invoke(m[0].ptr, 'trigger'), target: pa(m[0]) });
   }
 } else if (CMD.op === 'invoke') {
+  if (CMD.nth !== undefined && CMD.nth !== null && sel.length > CMD.nth) {
+    // several identical widgets (e.g. two unnamed sliders): pick by order, top-to-bottom on screen
+    sel.sort((a, b) => a.rect[1] - b.rect[1] || a.rect[0] - b.rect[0]);
+    sel.splice(0, sel.length, sel[CMD.nth]);
+  }
   if (sel.length !== 1) {
     send({ op: 'invoke', ok: false, error: 'expected exactly 1 matching widget, got ' + sel.length, candidates: sel.map(pub) });
   } else {
