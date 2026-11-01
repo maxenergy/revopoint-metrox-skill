@@ -1,6 +1,6 @@
 ---
 name: revo-metro-cad-copilot
-description: AI-assisted 3D scanning copilot, GUI/config/log controller for RevoMetro.exe (C:\Program Files\Revo Metro\RevoMetro.exe), and automated Scan-to-CAD / 2D-3D Engineering Drawing generator. Activate this skill whenever the user wants to launch, control, configure, or monitor RevoMetro.exe, perform AI-assisted 3D scanning, diagnose tracking loss or scan logs, or convert 3D scan data (.revo, .ply, .stl, .obj) into cleaned 3D meshes, reverse-engineered parametric 3D CAD solids (.step, .iges, Python CAD scripts), or 2D/3D engineering blueprints (.dxf, .svg, .pdf, .png). Also activate it when the user wants the hands-free pipeline "scan finished → fuse/mesh in RevoMetro → drawings → slice for Bambu Lab H2D / A2L 3D printers (.3mf / .gcode)".
+description: AI-assisted 3D scanning copilot, GUI/config/log controller for RevoMetro.exe (C:\Program Files\Revo Metro\RevoMetro.exe), and automated Scan-to-CAD / 2D-3D Engineering Drawing generator. Activate this skill whenever the user wants to launch, control, configure, or monitor RevoMetro.exe, perform AI-assisted 3D scanning, diagnose tracking loss or scan logs, or convert 3D scan data (.revo, .ply, .stl, .obj) into cleaned 3D meshes, reverse-engineered parametric 3D CAD solids (.step, .iges, Python CAD scripts), or 2D/3D engineering blueprints (.dxf, .svg, .pdf, .png). Also activate it when the user wants the hands-free pipeline "scan finished → fuse/mesh in RevoMetro → drawings → slice for Bambu Lab H2D / A2L 3D printers (.3mf / .gcode)", or wants to send a sliced file to a Bambu Lab printer over the LAN, start or stop a print, read printer status or errors, check the printer camera, or watch a running print.
 ---
 
 # Revo Metro AI 辅助扫描控制与 3D 逆向工程制图 Skill (`revo-metro-cad-copilot`)
@@ -23,6 +23,7 @@ description: AI-assisted 3D scanning copilot, GUI/config/log controller for Revo
 | [`scripts/revo_pipeline.py`](scripts/revo_pipeline.py) | **全自动流水线**：经命名管道让运行中的 RevoMetro 打开工程，经 Frida 注入的 Qt 反射点击 One-click Edit「Apply」完成融合+网格，跟踪 `rvScan5.log` 等待完成，再串联 `scan_to_cad.py` 与 `slice_print.py`。 | 系统 Python + `rea` CLI（内置 Frida） |
 | [`scripts/frida/qt_bridge.js`](scripts/frida/qt_bridge.js) | 注入 RevoMetro 的 Qt5 控制脚本：枚举全部 QWidget（objectName/类名/文字/可见/可用），用 `QMetaObject::invokeMethod(..., Qt::QueuedConnection)` 在 GUI 线程上点击按钮。 | 由 `revo_pipeline.py` 调用 |
 | [`scripts/slice_print.py`](scripts/slice_print.py) | **拓竹 H2D / A2L 切片**：展开 Bambu 系统预设的 `inherits` 继承链，调用 OrcaSlicer CLI 输出 `.3mf` + `.gcode`。 | 系统 Python + `C:\Program Files\OrcaSlicer\orca-slicer.exe` |
+| [`scripts/bambu_lan.py`](scripts/bambu_lan.py) | **拓竹局域网控制**：读状态与错误码、抓摄像头画面、上传切片文件、开始打印、停止 / 暂停 / 继续任务、监控到打印结束。 | 系统 Python（零第三方依赖），开始打印需打印机开启 Developer Mode |
 
 ---
 
@@ -199,6 +200,7 @@ python $P mclick --name markerScanBtn --cls SwitchButton      # 真实鼠标点�
 python slice_print.py model.stl --printer a2l --out-dir out\print
 python slice_print.py a.stl b.stl c.stl --printer a2l --name parts --out-dir out\print   # 多个零件排在同一块板上
 python slice_print.py x --printer h2d --list-presets         # 列出可用工艺/耗材预设
+python slice_print.py model.stl --printer a2l --bed-type "Textured PEI Plate" --external-spool --out-dir out\print   # 指定打印板；外挂料盘不退料
 ```
 
 ### 扫描控制（MetroX Pro + 双轴转盘，实测）
@@ -220,9 +222,55 @@ python slice_print.py x --printer h2d --list-presets         # 列出可用工�
 ### 切片预设说明
 - OrcaSlicer 2.4.2 自带 H2D 预设，没有 A2L。A2L 的机器预设取自 Bambu Studio 缓存（`%APPDATA%\BambuStudio\system\BBL`），工艺/耗材默认用 Orca 的 `@BBL A1` 预设（Bambu Studio 的工艺值会被 Orca 校验拒绝，例如 `tree_support_wall_count=-1`）。拿到 Orca 官方 A2L 预设后，应换成原生预设。
 - OrcaSlicer CLI 退出码：`-17` 工艺与机器不兼容，`-18` 参数超出范围；`--export-3mf` 的文件名相对于 `--outputdir`。
+- **A2L 跑的是通用 G-code**：A2L 机器预设用 `include` 引用 5 个专用模板（`machine_start_gcode`、`machine_end_gcode`、`change_filament_gcode`、`layer_change_gcode`、`time_lapse_gcode`），`slice_print.py` 没有合并它们，因为启动模板里的 `initial_filament_id` 等 Bambu 专有变量会让 Orca 2.4.2 报 `Not a variable name`。所以实际使用的是继承来的通用 G-code，它的启动段把喷嘴写死为 `M109 S205`，打 PETG 等高温料时要注意划线阶段的温度。
+- **`--external-spool`**：通用收尾 G-code 里有退料段（`M620 S255` … `T255` … `M621 S255`）。外挂料盘时 A2L 执行到这里会把喷嘴停在约 230°C，提示拔出耗材（HMS `07FF-2000-0002-0004`），一直等人处理。这个开关会去掉退料段，耗材留在喷嘴里，下次打印前如需换料请先退料。
 
 ### 前置条件与限制
 - 扫描本身仍需人工完成；流水线从"扫描已保存"开始。
 - 需要 `rea` CLI（Frida）以当前用户权限 attach 到 RevoMetro；没装 `rea` 时会退回 `npx -y rea-agents@6.4.0`。
 - 从本工具的 shell 里启动的 RevoMetro 会随 shell 的 Job 对象一起被回收，所以 `ensure_running` 通过 `explorer.exe` 启动它。
 - 逆向 STEP 是"轮廓拉伸 + 竖直通孔"的简化实体，自由曲面零件请打印 `--print-source mesh`（默认）。
+
+---
+
+## 6. 工作流四：局域网发送打印并监控（`bambu_lan.py`）
+
+不需要云账号和 Bambu Studio。打印机信息用参数或环境变量传入。**访问码是凭据，不要写进仓库或记忆**：
+
+```powershell
+$env:BAMBU_IP = "<打印机 IP>"; $env:BAMBU_SERIAL = "<序列号>"; $env:BAMBU_ACCESS_CODE = "<局域网访问码>"
+$P = "skills/revo-metro-cad-copilot/scripts/bambu_lan.py"
+
+python $P status                            # 状态、错误码、HMS、外挂料盘耗材；--out 保存完整报告
+python $P cam plate.jpg                     # 抓一帧画面，开打前看打印板
+python $P upload parts_a2l.3mf              # 只上传到 SD 卡
+python $P print parts_a2l.3mf --plate-clear # 上传并开始打印
+python $P watch --snapshot end.jpg          # 监控到结束；打印完成时退出码为 0
+python $P control pause                     # pause / resume / stop；stop 后不能继续
+python $P control stop --only-if-finished   # 只在最后一层已打完时结束任务
+```
+
+### 开始打印前必须确认
+打印机收到命令会立刻动作。开打前先跑 `status` 和 `cam`，确认**打印板是空的、打印板类型与切片一致、没有人在操作打印机**，然后才加 `--plate-clear`。打印机正忙时脚本会拒绝发送。
+
+### `watch` 的结果
+轮询间隔默认 120 秒。开始监控时已存在的 HMS 警告不会让监控结束。
+
+| `outcome` | 含义 | 退出码 |
+| :--- | :--- | :--- |
+| `finished` | 打印完成 | 0 |
+| `finished_unload_prompt` | 最后一层已打完，停在拔料提示上（切片没加 `--external-spool`）。人工拔料，或用 `control stop --only-if-finished` 结束；后者会显示"任务已取消"（`0300400C`），但零件是完整的 | 0 |
+| `paused` / `error` / `new_hms` | 任务暂停、出现错误码或新的 HMS 警告，需要处理 | 1 |
+| `stopped` | 任务已结束但没有完成（失败、取消或没有任务） | 1 |
+| `offline` / `timeout` | 连续 10 次连不上，或超过 `--hours` | 1 |
+
+### 排错
+- **返回码 5**：访问码错误。访问码可能会变，到打印机屏幕上重新查看。注意字母 `l` 和数字 `1`。
+- **`project_file` 没有回复**：打印机没开 Developer Mode，命令会被忽略，并出现 HMS `0500-0400-0001-0007`。
+- **解码错误码**：`https://e.bambulab.com/query.php?lang=zh-cn` 返回完整数据库，HMS 在 `data.device_hms`，`print_error` 在 `data.device_error`，每条为 `{ecode, intro}`。
+- **确认设备**：Clash Verge 等 TUN 代理会让局域网里每个 IP 都显示端口开放。只有 8883 端口的 TLS 证书由 `BBL Device CA` 签发的才是打印机，证书 CN 就是序列号。
+
+### 限制
+- 只支持外挂料盘（`use_ams: false`），不处理 AMS 映射。
+- 摄像头走 TLS 6000 端口（A / P 系列），其他机型可能用别的方式。
+- 只在 A2L 上用过，H2D 没有实测。

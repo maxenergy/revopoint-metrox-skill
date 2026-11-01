@@ -13,6 +13,7 @@ A documentation + Agent Skills repo for the Revopoint MetroX 3D scanner (and the
   - `scripts/scan_to_cad.py` — scan-to-CAD pipeline.
   - `scripts/revo_pipeline.py` — end-to-end automation: opens a project in the running RevoMetro via the `\\.\pipe\revoscan5_localserver` named pipe, clicks One-click Edit "Apply" through `scripts/frida/qt_bridge.js` (Frida-injected Qt reflection, run via `rea instrument-with-frida`), waits on `rvScan5.log`, then runs `scan_to_cad.py` and `slice_print.py`.
   - `scripts/slice_print.py` — flattens Bambu preset `inherits` chains and slices with the OrcaSlicer CLI for Bambu Lab H2D / A2L.
+  - `scripts/bambu_lan.py` — stdlib-only LAN control of Bambu printers: status, camera, FTPS upload, print start (needs Developer Mode), stop/pause/resume, and a watchdog.
 
 ## Skill mirror: keep `skills/` and `.agents/skills/` identical
 
@@ -34,6 +35,10 @@ python skills/revo-metro-cad-copilot/scripts/scan_to_cad.py --input part.ply --n
 python skills/revo-metro-cad-copilot/scripts/revo_pipeline.py widgets            # live Qt widget list (needs RevoMetro running)
 python skills/revo-metro-cad-copilot/scripts/revo_pipeline.py auto --project <Name> --printer h2d a2l [--force]
 python skills/revo-metro-cad-copilot/scripts/slice_print.py model.stl --printer a2l --out-dir output/print
+
+# BAMBU_IP, BAMBU_SERIAL and BAMBU_ACCESS_CODE (or --ip, --serial, --code before the subcommand)
+python skills/revo-metro-cad-copilot/scripts/bambu_lan.py status
+python skills/revo-metro-cad-copilot/scripts/bambu_lan.py print model_a2l.3mf --plate-clear   # check the plate with `cam` first
 ```
 
 Treat the argparse definitions in each script's `main()` as the source of truth for CLI flags; `scan_to_cad.py` requires `--input` or `--project`.
@@ -44,7 +49,7 @@ Treat the argparse definitions in each script's `main()` as the source of truth 
 - Projects: `%APPDATA%\RevoMetro\Projects\<name>\*.revo`; config `%LOCALAPPDATA%\RevoMetro\config\revoscan.cfg`; log `%LOCALAPPDATA%\RevoMetro\logs\rvScan5.log`
 - `scan_to_cad.py` needs FreeCAD 1.x. If `import FreeCAD` fails it re-executes itself under `FREECAD_PYTHON` (`C:\Users\rogers\Applications\FreeCAD\bin\python.exe`), which provides FreeCAD/Part/Mesh/Points/ReverseEngineering, numpy, SciPy, Matplotlib. Use that interpreter directly for ad-hoc testing.
 - Default output dirs are `d:\source\revopoint\output` (gitignored).
-- `revo_pipeline.py` needs the `rea` CLI on PATH (Frida). OrcaSlicer at `C:\Program Files\OrcaSlicer`; A2L machine preset comes from the Bambu Studio cache `%APPDATA%\BambuStudio\system\BBL` (OrcaSlicer 2.4.x has none), with Orca's `@BBL A1` process/filament presets.
+- `revo_pipeline.py` needs the `rea` CLI on PATH (Frida). OrcaSlicer at `C:\Program Files\OrcaSlicer`; A2L machine preset comes from the Bambu Studio cache `%APPDATA%\BambuStudio\system\BBL` (OrcaSlicer 2.4.x has none), with Orca's `@BBL A1` process/filament presets. The A2L preset's `include` G-code templates are deliberately not merged (Orca's parser rejects their Bambu-only variables), so A2L slices run the generic G-code inherited from `fdm_bbl_3dp_001_common`.
 - RevoMetro started from a tool shell is killed with the shell's job object; launch it via `explorer.exe`. It opens forwarded projects only from the start page (click `Home` first).
 - The system Python's pip is broken here (`SeparateBodyFileCache` import error); scripts avoid third-party packages outside FreeCAD's bundled Python.
 
